@@ -46,8 +46,7 @@ class ContentMigrator(object):
                 realuid = self.convertedUids[uid]
             return self.uid_cat(UID=realuid)[0].getObject()
         elif 'resolveuid/' in value:
-            for match in resolveuid_re.findall(value):
-                uid = match[0]
+            for uid in resolveuid_re.findall(value):
                 value = value.replace('resolveuid/%s' % uid,
                     'resolveuid/%s' % self.convertedUids[uid])
         return value
