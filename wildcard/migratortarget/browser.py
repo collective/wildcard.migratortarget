@@ -1,3 +1,4 @@
+from wildcard.migrator.exceptions import MissingObjectException
 from wildcard.migrator import getMigratorsOfType
 from Products.Five.browser.pagetemplatefile import ViewPageTemplateFile
 from wildcard.migrator.utils import getMigratorFromRequest
@@ -77,7 +78,7 @@ class ContentMigrator(object):
     def _touchPath(self, path):
         # have data for request but no object created yet?
         # need to assemble obj first then
-        obj = self.site.restrictedTraverse(path, None)
+        obj = self.site.restrictedTraverse(path.lstrip('/'), None)
         if obj:
             return obj
         resp = requests.post(self.source, data={
@@ -117,7 +118,14 @@ class ContentMigrator(object):
 
             self.convertUids(content)
             migr = ContentObjectMigrator(self.site, obj)
-            migr.set(content)
+            error = True
+            while error:
+                error = False
+                try:
+                    migr.set(content)
+                except MissingObjectException, ex:
+                    self._touchPath(ex.path)
+                    error = True
 
             self.imported.append(objpath)
 
