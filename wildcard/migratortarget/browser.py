@@ -51,8 +51,9 @@ class ContentMigrator(object):
             return self.uid_cat(UID=realuid)[0].getObject()
         elif 'resolveuid/' in value:
             for uid in resolveuid_re.findall(value):
-                value = value.replace('resolveuid/%s' % uid,
-                    'resolveuid/%s' % self.convertedUids[uid])
+                if uid in self.convertedUids:
+                    value = value.replace('resolveuid/%s' % uid,
+                        'resolveuid/%s' % self.convertedUids[uid])
         return value
 
     def convertUids(self, data):
@@ -107,8 +108,9 @@ class ContentMigrator(object):
                 'path': objpath
             })
             content = json.loads(response.content)
-            for uid, path in content.pop('uids'):
+            for uid, path in content['uids']:
                 if uid not in self.convertedUids:
+                    path = str(path)
                     if path in self.stubs or path in self.imported:
                         uidObj = self.site.restrictedTraverse(path)
                         self.convertedUids[uid] = uidObj.UID()
