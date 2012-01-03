@@ -14,6 +14,9 @@ from wildcard.migrator.content import ContentTouchMigrator
 from Products.CMFCore.utils import getToolByName
 from wildcard.migrator.content import resolveuid_re
 
+from wildcard.migrator import scan
+scan()
+
 
 def replaceUids(data):
     pass
