@@ -85,13 +85,13 @@ class ContentMigrator(object):
     def _touchPath(self, path):
         # have data for request but no object created yet?
         # need to assemble obj first then
-        path = path.lstrip('/')
+        path = str(path.lstrip('/'))
         obj = self.site.restrictedTraverse(path, None)
         if obj:
             return obj
         resp = requests.post(self.source, data={
             'migrator': ContentTouchMigrator.title,
-            'context': '_',
+            'context': ContentTouchMigrator._type,
             'path': path
         })
         content = json.loads(resp.content)
