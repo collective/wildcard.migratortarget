@@ -18,6 +18,9 @@ from wildcard.migrator.content import resolveuid_re
 from wildcard.migrator import scan
 scan()
 
+import logging
+logger = logging.getLogger('wildcard.migrator')
+
 
 def replaceUids(data):
     pass
@@ -40,7 +43,10 @@ class ContentMigrator(object):
 
     def _fixUids(self, value):
         """ must be a string argument"""
-        if value.startswith(json._uid_marker):
+        if value.startswith(json._filedata_marker):
+            # do not check file data
+            return value
+        elif value.startswith(json._uid_marker):
             # converted uid
             # these may need to be touched
             uid, path = json.decodeUid(value)
@@ -120,6 +126,8 @@ class ContentMigrator(object):
                         self.touchPath(path, uid)
 
             self.convertUids(content)
+            logger.info('apply data migrations on %s' % (
+                '/'.join(obj.getPhysicalPath())))
             migr = ContentObjectMigrator(self.site, obj)
             error = True
             while error:
@@ -127,6 +135,7 @@ class ContentMigrator(object):
                 try:
                     migr.set(content)
                 except MissingObjectException, ex:
+                    logger.info('oops, could not find %s - touching' % ex.path)
                     self._touchPath(ex.path)
                     error = True
 
@@ -139,6 +148,8 @@ class ContentMigrator(object):
                 transaction.commit()
 
             obj.reindexObject()
+            logger.info('finished migrating %s' % (
+                '/'.join(obj.getPhysicalPath())))
         if IBaseFolder.providedBy(obj):
             migr = FolderContentsMigrator(self.site, obj)
             folderdata = requests.post(self.source, data={
@@ -151,6 +162,7 @@ class ContentMigrator(object):
 
     def __call__(self, migrator, data):
         for obj in migrator.set(data):
+            logger.info('start migrating %s' % '/'.join(obj.getPhysicalPath()))
             self.migrateObject(obj)
         return self.count
 
