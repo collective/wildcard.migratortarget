@@ -14,6 +14,7 @@ from zope.app.component.hooks import getSite
 from wildcard.migrator.content import ContentTouchMigrator
 from Products.CMFCore.utils import getToolByName
 from wildcard.migrator.content import resolveuid_re
+from wildcard.migrator.utils import safeTraverse
 
 from wildcard.migrator import scan
 scan()
@@ -86,7 +87,7 @@ class ContentMigrator(object):
         # have data for request but no object created yet?
         # need to assemble obj first then
         path = str(path.lstrip('/'))
-        obj = self.site.restrictedTraverse(path, None)
+        obj = safeTraverse(self.site, path, None)
         if obj:
             return obj
         resp = requests.post(self.source, data={
@@ -118,7 +119,7 @@ class ContentMigrator(object):
                 if uid not in self.convertedUids:
                     path = str(path)
                     if path in self.stubs or path in self.imported:
-                        uidObj = self.site.restrictedTraverse(path)
+                        uidObj = safeTraverse(self.site, path, None)
                         self.convertedUids[uid] = uidObj.UID()
                     else:
                         # create stub object if they aren't there
@@ -135,8 +136,13 @@ class ContentMigrator(object):
                 try:
                     migr.set(content)
                 except MissingObjectException, ex:
-                    logger.info('oops, could not find %s - touching' % ex.path)
-                    self._touchPath(ex.path)
+                    logger.info(
+                        'oops, could not find %s - touching' % ex.path)
+                    try:
+                        self._touchPath(ex.path)
+                    except ValueError:
+                        # error in response. must not be valid object
+                        pass
                     error = True
 
             self.imported.append(objpath)
