@@ -8,6 +8,7 @@ from wildcard.migrator import mjson as json
 from wildcard.migrator.content import SiteContentsMigrator
 from wildcard.migrator.content import FolderContentsMigrator
 from wildcard.migrator.content import ContentObjectMigrator
+from wildcard.migrator.archetypes import FieldMigrator
 from Products.Archetypes.interfaces.base import IBaseFolder
 import transaction
 from zope.app.component.hooks import getSite
@@ -15,6 +16,10 @@ from wildcard.migrator.content import ContentTouchMigrator
 from Products.CMFCore.utils import getToolByName
 from wildcard.migrator.content import resolveuid_re
 from wildcard.migrator.utils import safeTraverse
+from plone.app.blob.interfaces import IBlobbable
+from zope.contenttype import guess_content_type
+from zope.interface import implements
+from zope.component import adapts
 
 from wildcard.migrator import scan
 scan()
@@ -23,17 +28,42 @@ import logging
 logger = logging.getLogger('wildcard.migrator')
 
 
-def replaceUids(data):
-    pass
+class FileResponseBlobable(object):
+    implements(IBlobbable)
+    adapts(requests.Response)
+
+    def __init__(self, resp):
+        self.resp = resp
+
+    def feed(self, blob):
+        """ store the file contents into the given blob, either be calling
+            `consumeFile` or copying the contents in case no correspondig
+            file object exists """
+        blobfile = blob.open('w')
+        for content in self.resp.iter_content():
+            blobfile.write(content)
+        blobfile.close()
+
+    def filename(self):
+        """ return an associated filename, or `None` """
+        return self.resp.headers['filename']
+
+    def mimetype(self):
+        """ return the mime type of the file contents if available, or
+            `None` otherwise """
+        mimetype, enc = guess_content_type(
+            self.filename(), self.resp.headers.get('content-type'))
+        return mimetype
 
 
 class ContentMigrator(object):
 
-    def __init__(self, req, source, site, threshold=150):
+    def __init__(self, req, source, sourcesite, site, threshold=150):
         self.req = req
         self.resp = req.response
         self.threshold = threshold
         self.source = source
+        self.sourcesite = sourcesite
         self.site = site
         self.count = 0
         self.imported = []
@@ -106,6 +136,20 @@ class ContentMigrator(object):
         self.convertedUids[uid] = realuid
         return touched, realuid, uid
 
+    def handleDeferred(self, obj, objpath, content):
+        """
+        very large files get deferred to get sent out
+        so we need an extra handler for it
+        """
+        if 'fieldvalues' in content:
+            for fieldname, value in content['fieldvalues'].items():
+                if value['value'] == json.Deferred:
+                    resp = requests.post(self.sourcesite + \
+                            '/@@migrator-exportfield',
+                        data={'path': objpath, 'field': fieldname})
+                    migr = FieldMigrator(self.site, obj, fieldname)
+                    migr.set({'value': resp, 'extras': {}})
+
     def migrateObject(self, obj):
         objpath = '/'.join(obj.getPhysicalPath())[len(self.sitepath) + 1:]
         if objpath not in self.imported:
@@ -135,6 +179,7 @@ class ContentMigrator(object):
                 error = False
                 try:
                     migr.set(content)
+                    self.handleDeferred(obj, objpath, content)
                 except MissingObjectException, ex:
                     logger.info(
                         'oops, could not find %s - touching' % ex.path)
@@ -181,12 +226,12 @@ class Importer(BrowserView):
 
     def __call__(self):
         if self.request.get('REQUEST_METHOD') == 'POST':
-            source = self.request.get('source')
-            if not source:
+            sourcesite = self.request.get('source', '').rstrip('/')
+            if not sourcesite:
                 raise Exception("Must specify a source")
             migratorname = self.request.get('migrator')
             migrator = getMigratorFromRequest(self.request)
-            source = source.rstrip('/') + '/@@migrator-exporter'
+            source = sourcesite + '/@@migrator-exporter'
             result = requests.post(source, data={
                 'migrator': self.request.get('migrator'),
                 'context': 'site'})
@@ -194,7 +239,7 @@ class Importer(BrowserView):
             if migratorname == SiteContentsMigrator.title:
                 threshold = int(self.request.get('threshold', '150'))
                 contentmigrator = ContentMigrator(self.request,
-                    source, migrator.site, threshold)
+                    source, sourcesite, migrator.site, threshold)
                 contentmigrator(migrator, data)
                 return ''
             else:

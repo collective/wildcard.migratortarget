@@ -5,6 +5,8 @@
     xmlns:browser="http://namespaces.zope.org/browser"
     i18n_domain="wildcard.migratortarget">
 
+    <adapter factory=".browser.FileResponseBlobable" />
+
     <browser:page
         name="migrator-importer"
         for="Products.CMFPlone.interfaces.siteroot.IPloneSiteRoot"
