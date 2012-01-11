@@ -16,49 +16,20 @@ from wildcard.migrator.content import ContentTouchMigrator
 from Products.CMFCore.utils import getToolByName
 from wildcard.migrator.content import resolveuid_re
 from wildcard.migrator.utils import safeTraverse
-from plone.app.blob.interfaces import IBlobbable
-from zope.contenttype import guess_content_type
-from zope.interface import implements
-from zope.component import adapts
-
+from plone.app.blob.interfaces import IBlobField
+from StringIO import StringIO
 from wildcard.migrator import scan
+from persistent.list import PersistentList
 scan()
 
 import logging
 logger = logging.getLogger('wildcard.migrator')
 
 
-class FileResponseBlobable(object):
-    implements(IBlobbable)
-    adapts(requests.Response)
-
-    def __init__(self, resp):
-        self.resp = resp
-
-    def feed(self, blob):
-        """ store the file contents into the given blob, either be calling
-            `consumeFile` or copying the contents in case no correspondig
-            file object exists """
-        blobfile = blob.open('w')
-        for content in self.resp.iter_content():
-            blobfile.write(content)
-        blobfile.close()
-
-    def filename(self):
-        """ return an associated filename, or `None` """
-        return self.resp.headers['filename']
-
-    def mimetype(self):
-        """ return the mime type of the file contents if available, or
-            `None` otherwise """
-        mimetype, enc = guess_content_type(
-            self.filename(), self.resp.headers.get('content-type'))
-        return mimetype
-
-
 class ContentMigrator(object):
 
-    def __init__(self, req, source, sourcesite, site, threshold=150):
+    def __init__(self, req, source, sourcesite, site,
+                 threshold=150, attributes=[], onlyNew=False):
         self.req = req
         self.resp = req.response
         self.threshold = threshold
@@ -71,6 +42,8 @@ class ContentMigrator(object):
         self.convertedUids = {}  # a mapping of old site uid, to new site uid
         self.uid_cat = getToolByName(self.site, 'uid_catalog')
         self.sitepath = '/'.join(getSite().getPhysicalPath())
+        self.attributes = attributes
+        self.onlyNew = onlyNew
 
     def _fixUids(self, value):
         """ must be a string argument"""
@@ -106,7 +79,7 @@ class ContentMigrator(object):
                             self.convertUids(v)
                 elif type(value) == dict:
                     self.convertUids(value)
-        elif type(data) in (list, tuple, set):
+        elif type(data) in (list, tuple):
             for idx, v in enumerate(data):
                 if isinstance(v, basestring):
                     data[idx] = self._fixUids(v)
@@ -147,16 +120,36 @@ class ContentMigrator(object):
                     resp = requests.post(self.sourcesite + \
                             '/@@migrator-exportfield',
                         data={'path': objpath, 'field': fieldname})
+                    largefile = False
+                    if int(resp.headers['content-length']) / 1024 / 1024 > 50:
+                        largefile = True
+                        transaction.commit()  # commit before and after
                     migr = FieldMigrator(self.site, obj, fieldname)
-                    migr.set({'value': resp, 'extras': {}})
+                    field = obj.getField(fieldname)
+                    content = resp.content
+                    filename = resp.headers.get('filename', '')
+                    mimetype = resp.headers.get('content-type', '')
+                    if IBlobField.providedBy(field):
+                        # not a blob field here...
+                        content = StringIO(content)
+                        content.filename = filename
+                    migr.set({'value': content, 'extras': {
+                        'filename': filename,
+                        'mimetype': mimetype
+                    }})
+                    if largefile:
+                        transaction.commit()
 
     def migrateObject(self, obj):
         objpath = '/'.join(obj.getPhysicalPath())[len(self.sitepath) + 1:]
-        if objpath not in self.imported:
+        if objpath not in self.imported and not \
+            (self.onlyNew and objpath in self.site._import_results):
             response = requests.post(self.source, data={
                 'migrator': ContentObjectMigrator.title,
                 'context': 'object',
-                'path': objpath
+                'path': objpath,
+                'args': json.dumps({
+                    'attributes': self.attributes})
             })
             content = json.loads(response.content)
             for uid, path in content['uids']:
@@ -195,6 +188,9 @@ class ContentMigrator(object):
             self.count += 1
             self.resp.write('%i: updating object %s\n' % (self.count,
                 '/'.join(obj.getPhysicalPath())))
+            if objpath not in self.site._import_results:
+                self.site._import_results.append(objpath)
+
             if self.count % self.threshold == 0:
                 transaction.commit()
 
@@ -225,6 +221,8 @@ class Importer(BrowserView):
         return getMigratorsOfType('site')
 
     def __call__(self):
+        if not hasattr(self.context, '_import_results'):
+            self.context._import_results = PersistentList()
         if self.request.get('REQUEST_METHOD') == 'POST':
             sourcesite = self.request.get('source', '').rstrip('/')
             if not sourcesite:
@@ -232,16 +230,37 @@ class Importer(BrowserView):
             migratorname = self.request.get('migrator')
             migrator = getMigratorFromRequest(self.request)
             source = sourcesite + '/@@migrator-exporter'
+            attributes = self.request.get('attributes', '').splitlines()
             result = requests.post(source, data={
                 'migrator': self.request.get('migrator'),
                 'context': 'site'})
             data = json.loads(result.content)
+            if self.request.get('onlyNew', False):
+                onlyNew = True
+            else:
+                onlyNew = False
             if migratorname == SiteContentsMigrator.title:
                 threshold = int(self.request.get('threshold', '150'))
-                contentmigrator = ContentMigrator(self.request,
-                    source, sourcesite, migrator.site, threshold)
+                contentmigrator = ContentMigrator(self.request, source,
+                    sourcesite, migrator.site, threshold, attributes, onlyNew)
                 contentmigrator(migrator, data)
-                return ''
             else:
                 migrator.set(data)
+            return 'done'
         return self.template()
+
+
+class ImportObject(BrowserView):
+
+    def __call__(self):
+        sourcesite = self.request.get('source', '').rstrip('/')
+        if not sourcesite:
+            raise Exception("Must specify a source")
+        source = sourcesite + '/@@migrator-exporter'
+        threshold = int(self.request.get('threshold', '150'))
+        contentmigrator = ContentMigrator(self.request,
+            source, sourcesite, getSite(), threshold)
+        path = self.request.get('path')
+        obj = contentmigrator._touchPath(path)
+        contentmigrator.migrateObject(obj)
+        return ''

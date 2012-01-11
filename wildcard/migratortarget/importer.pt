@@ -15,8 +15,30 @@
 
 <metal:content-core fill-slot="content-core">
     <metal:content-core define-macro="content-core">
+        <p class="discreet">
+            <tal:num tal:replace="python: len(context._import_results)" />
+            already imported
+        </p>
         <form method="POST">
-            <input type="text" name="source" tal:attributes="value request/source|nothing" />
+            <div class="field">
+                <label for="source">
+                    Source Plone Site URL
+                </label>
+                <input id="source" type="text" name="source" tal:attributes="value request/source|nothing" />
+            </div>
+            <div class="field">
+                <label for="attributes">
+                    Extra object attributes to copy over. One per line.
+                </label>
+                <textarea id="attributes" name="attributes" tal:content="request/attributes|nothing">
+                </textarea>
+            </div>
+            <div class="field" tal:define="onlyNew request/onlyNew|nothing">
+                <input type="checkbox" id="onlyNew" name="onlyNew" tal:attributes="checked python: onlyNew and 'checked' or None" />
+                <label for="onlyNew">
+                    Only import new items
+                </label>
+            </div>
             <fieldset>
                 <legend>Site Importers</legend>
                 <tal:importers tal:repeat="importer view/site_migrators">
