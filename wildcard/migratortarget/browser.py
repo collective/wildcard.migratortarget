@@ -242,19 +242,35 @@ class ContentMigrator(object):
     def migrateObjects(self, objects):
         paths = []
         for obj in objects:
-            paths.append(self.getRelativePath(obj))
-        migr = MultiContentObjectMigrator(self.site, self.site,
-            paths, self.attributes)
-        response = requests.post(self.source, data={
-            'migrator': migr.title,
-            'args': json.dumps({
-                    'attributes': self.attributes,
-                    'paths': paths})
-            })
-        objectsData = json.loads(response.content)
-        for path, content in objectsData.items():
-            object = safeTraverse(self.site, path)
-            self.migrateObject(object, content)
+            objpath = self.getRelativePath(obj)
+            if objpath not in self.imported and not \
+                (self.onlyNew and objpath in self.site._import_results):
+                paths.append(objpath)
+        if paths:  # only if there are ones to migrate
+            migr = MultiContentObjectMigrator(self.site, self.site,
+                paths, self.attributes)
+            response = requests.post(self.source, data={
+                'migrator': migr.title,
+                'args': json.dumps({
+                        'attributes': self.attributes,
+                        'paths': paths})
+                })
+            objectsData = json.loads(response.content)
+            for path, content in objectsData.items():
+                path = str(path)
+                object = safeTraverse(self.site, path)
+                self._migrateObject(object, path, content=content)
+
+        for obj in objects:
+            # then need to check if any are folders...
+            if IBaseFolder.providedBy(obj):
+                migr = FolderContentsMigrator(self.site, obj)
+                folderdata = requests.post(self.source, data={
+                    'migrator': FolderContentsMigrator.title,
+                    'path': '/'.join(obj.getPhysicalPath()
+                        )[len(self.sitepath) + 1:]
+                })
+                self(migr, json.loads(folderdata.content))
 
     def __call__(self, migrator, data):
         batch = []
