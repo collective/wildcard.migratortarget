@@ -48,6 +48,15 @@
                 </div>
                 <input type="text" id="threshold" name="threshold" tal:attributes="value threshold|string:150" />
             </div>
+            <div class="field" tal:define="batch request/batch|string:10">
+                <label for="batch">
+                    Batch
+                </label>
+                <div class="formHelp">
+                    Number of content items to gather at a time for import.
+                </div>
+                <input type="text" id="batch" name="batch" tal:attributes="value batch|string:10" />
+            </div>
             <div class="field" tal:define="index request/index|nothing">
                 <input type="checkbox" id="index" name="index" tal:attributes="checked python: index and 'checked' or None" />
                 <label for="index">

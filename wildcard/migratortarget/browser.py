@@ -14,6 +14,7 @@ import transaction
 from zope.app.component.hooks import getSite
 from wildcard.migrator.content import ContentTouchMigrator
 from wildcard.migrator.content import MultiContentTouchMigrator
+from wildcard.migrator.content import MultiContentObjectMigrator
 from Products.CMFCore.utils import getToolByName
 from wildcard.migrator.content import resolveuid_re
 from wildcard.migrator.utils import safeTraverse
@@ -27,17 +28,9 @@ import logging
 logger = logging.getLogger('wildcard.migrator')
 
 
-# some ids need to be converted...
-# when this is done, we also need to add a redirect
-# for the old path
-_id_conversions = {
-    'images': 'Images'
-}
-
-
 class ContentMigrator(object):
 
-    def __init__(self, req, source, sourcesite, site,
+    def __init__(self, req, source, sourcesite, site, batch=1,
                  threshold=150, attributes=[], onlyNew=False, index=False):
         self.req = req
         self.resp = req.response
@@ -54,6 +47,7 @@ class ContentMigrator(object):
         self.attributes = attributes
         self.onlyNew = onlyNew
         self.index = index
+        self.batch = batch
 
     def _fixUids(self, value):
         """ must be a string argument"""
@@ -99,7 +93,6 @@ class ContentMigrator(object):
     def _touchPath(self, path):
         # have data for request but no object created yet?
         # need to assemble obj first then
-        path = str(path.lstrip('/'))
         obj = safeTraverse(self.site, path, None)
         if obj:
             return obj
@@ -121,7 +114,6 @@ class ContentMigrator(object):
     def touchPaths(self, uids):
         totouch = []
         for path, uid in uids:
-            path = str(path.lstrip('/'))
             obj = safeTraverse(self.site, path, None)
             if not obj:
                 totouch.append((path, uid))
@@ -170,10 +162,8 @@ class ContentMigrator(object):
                     if largefile:
                         transaction.commit()
 
-    def migrateObject(self, obj):
-        objpath = '/'.join(obj.getPhysicalPath())[len(self.sitepath) + 1:]
-        if objpath not in self.imported and not \
-                (self.onlyNew and objpath in self.site._import_results):
+    def _migrateObject(self, obj, objpath, content=None):
+        if content is None:
             response = requests.post(self.source, data={
                 'migrator': ContentObjectMigrator.title,
                 'path': objpath,
@@ -181,58 +171,65 @@ class ContentMigrator(object):
                     'attributes': self.attributes})
             })
             content = json.loads(response.content)
-            totouch = []
-            for uid, path in content['uids']:
-                if uid not in self.convertedUids:
-                    path = str(path).lstrip('/')
-                    uidObj = None
-                    if path in self.stubs or path in self.imported:
-                        uidObj = safeTraverse(self.site, path, None)
-                        if uidObj:
-                            self.convertedUids[uid] = uidObj.UID()
-                    if uidObj is None:
-                        # create stub object if they aren't there
-                        # this is so we can convert uids
-                        totouch.append((path, uid))
-                        #self.touchPath(path, uid)
-            if totouch:
-                self.touchPaths(totouch)
+        totouch = []
+        for uid, path in content['uids']:
+            if uid not in self.convertedUids:
+                path = str(path).lstrip('/')
+                uidObj = None
+                if path in self.stubs or path in self.imported:
+                    # might be imported but we don't know the uid conversion...
+                    uidObj = safeTraverse(self.site, path, None)
+                    if uidObj:
+                        self.convertedUids[uid] = uidObj.UID()
+                if uidObj is None:
+                    # create stub object if they aren't there
+                    # this is so we can convert uids
+                    totouch.append((path, uid))
+                    #self.touchPath(path, uid)
+        if totouch:
+            self.touchPaths(totouch)
 
-            self.convertUids(content)
-            logger.info('apply data migrations on %s' % (
-                '/'.join(obj.getPhysicalPath())))
-            migr = ContentObjectMigrator(self.site, obj)
-            error = True
-            while error:
-                error = False
+        self.convertUids(content)
+        logger.info('apply data migrations on %s' % (objpath))
+        migr = ContentObjectMigrator(self.site, obj)
+        error = True
+        while error:
+            error = False
+            try:
+                migr.set(content)
+                self.handleDeferred(obj, objpath, content)
+            except MissingObjectException, ex:
+                logger.info(
+                    'oops, could not find %s - touching' % ex.path)
                 try:
-                    migr.set(content)
-                    self.handleDeferred(obj, objpath, content)
-                except MissingObjectException, ex:
-                    logger.info(
-                        'oops, could not find %s - touching' % ex.path)
-                    try:
-                        self._touchPath(ex.path)
-                    except ValueError:
-                        # error in response. must not be valid object
-                        pass
-                    error = True
+                    self._touchPath(ex.path)
+                except ValueError:
+                    # error in response. must not be valid object
+                    pass
+                error = True
 
-            self.imported.append(objpath)
+        self.imported.append(objpath)
 
-            self.count += 1
-            self.resp.write('%i: updating object %s\n' % (self.count,
-                '/'.join(obj.getPhysicalPath())))
-            if objpath not in self.site._import_results:
-                self.site._import_results.append(objpath)
+        self.count += 1
+        self.resp.write('%i: updating object %s\n' % (self.count, objpath))
+        if objpath not in self.site._import_results:
+            self.site._import_results.append(objpath)
 
-            if self.count % self.threshold == 0:
-                transaction.commit()
+        if self.count % self.threshold == 0:
+            transaction.commit()
 
-            if self.index:
-                obj.reindexObject()
-            logger.info('finished migrating %s' % (
-                '/'.join(obj.getPhysicalPath())))
+        if self.index:
+            obj.reindexObject()
+        logger.info('finished migrating %s' % (objpath))
+
+    def getRelativePath(self, obj):
+        return '/'.join(obj.getPhysicalPath())[len(self.sitepath) + 1:]
+
+    def migrateObject(self, obj, content=None):
+        objpath = self.getRelativePath(obj)
+        if objpath not in self.imported and not \
+                (self.onlyNew and objpath in self.site._import_results):
+            self._migrateObject(obj, objpath, content=content)
         if IBaseFolder.providedBy(obj):
             migr = FolderContentsMigrator(self.site, obj)
             folderdata = requests.post(self.source, data={
@@ -242,10 +239,32 @@ class ContentMigrator(object):
             })
             self(migr, json.loads(folderdata.content))
 
+    def migrateObjects(self, objects):
+        paths = []
+        for obj in objects:
+            paths.append(self.getRelativePath(obj))
+        migr = MultiContentObjectMigrator(self.site, self.site,
+            paths, self.attributes)
+        response = requests.post(self.source, data={
+            'migrator': migr.title,
+            'args': json.dumps({
+                    'attributes': self.attributes,
+                    'paths': paths})
+            })
+        objectsData = json.loads(response.content)
+        for path, content in objectsData.items():
+            object = safeTraverse(self.site, path)
+            self.migrateObject(object, content)
+
     def __call__(self, migrator, data):
+        batch = []
         for obj in migrator.set(data):
-            logger.info('start migrating %s' % '/'.join(obj.getPhysicalPath()))
-            self.migrateObject(obj)
+            batch.append(obj)
+            if len(batch) >= self.batch:
+                self.migrateObjects(batch)
+                batch = []
+            #self.migrateObject(obj)
+        self.migrateObjects(batch)
         return self.count
 
 
@@ -279,12 +298,14 @@ class Importer(BrowserView):
                 index = False
             if migratorname == SiteContentsMigrator.title:
                 threshold = int(self.request.get('threshold', '150'))
+                batch = int(self.request.get('batch', '1'))
                 contentmigrator = ContentMigrator(self.request, source,
                     sourcesite, migrator.site,
                     threshold=threshold,
                     attributes=attributes,
                     onlyNew=onlyNew,
-                    index=index)
+                    index=index,
+                    batch=batch)
                 contentmigrator(migrator, data)
             else:
                 migrator.set(data)
