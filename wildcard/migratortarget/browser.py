@@ -13,6 +13,7 @@ from Products.Archetypes.interfaces.base import IBaseFolder
 import transaction
 from zope.app.component.hooks import getSite
 from wildcard.migrator.content import ContentTouchMigrator
+from wildcard.migrator.content import MultiContentTouchMigrator
 from Products.CMFCore.utils import getToolByName
 from wildcard.migrator.content import resolveuid_re
 from wildcard.migrator.utils import safeTraverse
@@ -117,6 +118,27 @@ class ContentMigrator(object):
         self.convertedUids[uid] = realuid
         return touched, realuid, uid
 
+    def touchPaths(self, uids):
+        totouch = []
+        for path, uid in uids:
+            path = str(path.lstrip('/'))
+            obj = safeTraverse(self.site, path, None)
+            if not obj:
+                totouch.append((path, uid))
+            else:
+                self.convertedUids[uid] = obj.UID()
+        resp = requests.post(self.source, data={
+            'migrator': MultiContentTouchMigrator.title,
+            'args': json.dumps({'totouch': totouch})
+        })
+        content = json.loads(resp.content)
+        migr = MultiContentTouchMigrator(self.site)
+        for touched, olduid in migr.set(content):
+            path = '/'.join(touched.getPhysicalPath())[len(self.sitepath) + 1:]
+            self.stubs.append(path.lstrip('/'))
+            realuid = touched.UID()
+            self.convertedUids[olduid] = realuid
+
     def handleDeferred(self, obj, objpath, content):
         """
         very large files get deferred to get sent out
@@ -151,7 +173,7 @@ class ContentMigrator(object):
     def migrateObject(self, obj):
         objpath = '/'.join(obj.getPhysicalPath())[len(self.sitepath) + 1:]
         if objpath not in self.imported and not \
-            (self.onlyNew and objpath in self.site._import_results):
+                (self.onlyNew and objpath in self.site._import_results):
             response = requests.post(self.source, data={
                 'migrator': ContentObjectMigrator.title,
                 'path': objpath,
@@ -159,16 +181,22 @@ class ContentMigrator(object):
                     'attributes': self.attributes})
             })
             content = json.loads(response.content)
+            totouch = []
             for uid, path in content['uids']:
                 if uid not in self.convertedUids:
-                    path = str(path)
+                    path = str(path).lstrip('/')
+                    uidObj = None
                     if path in self.stubs or path in self.imported:
                         uidObj = safeTraverse(self.site, path, None)
-                        self.convertedUids[uid] = uidObj.UID()
-                    else:
+                        if uidObj:
+                            self.convertedUids[uid] = uidObj.UID()
+                    if uidObj is None:
                         # create stub object if they aren't there
                         # this is so we can convert uids
-                        self.touchPath(path, uid)
+                        totouch.append((path, uid))
+                        #self.touchPath(path, uid)
+            if totouch:
+                self.touchPaths(totouch)
 
             self.convertUids(content)
             logger.info('apply data migrations on %s' % (
