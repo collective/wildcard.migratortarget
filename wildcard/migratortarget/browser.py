@@ -26,10 +26,18 @@ import logging
 logger = logging.getLogger('wildcard.migrator')
 
 
+# some ids need to be converted...
+# when this is done, we also need to add a redirect
+# for the old path
+_id_conversions = {
+    'images': 'Images'
+}
+
+
 class ContentMigrator(object):
 
     def __init__(self, req, source, sourcesite, site,
-                 threshold=150, attributes=[], onlyNew=False):
+                 threshold=150, attributes=[], onlyNew=False, index=False):
         self.req = req
         self.resp = req.response
         self.threshold = threshold
@@ -44,6 +52,7 @@ class ContentMigrator(object):
         self.sitepath = '/'.join(getSite().getPhysicalPath())
         self.attributes = attributes
         self.onlyNew = onlyNew
+        self.index = index
 
     def _fixUids(self, value):
         """ must be a string argument"""
@@ -95,7 +104,6 @@ class ContentMigrator(object):
             return obj
         resp = requests.post(self.source, data={
             'migrator': ContentTouchMigrator.title,
-            'context': ContentTouchMigrator._type,
             'path': path
         })
         content = json.loads(resp.content)
@@ -146,7 +154,6 @@ class ContentMigrator(object):
             (self.onlyNew and objpath in self.site._import_results):
             response = requests.post(self.source, data={
                 'migrator': ContentObjectMigrator.title,
-                'context': 'object',
                 'path': objpath,
                 'args': json.dumps({
                     'attributes': self.attributes})
@@ -194,14 +201,14 @@ class ContentMigrator(object):
             if self.count % self.threshold == 0:
                 transaction.commit()
 
-            obj.reindexObject()
+            if self.index:
+                obj.reindexObject()
             logger.info('finished migrating %s' % (
                 '/'.join(obj.getPhysicalPath())))
         if IBaseFolder.providedBy(obj):
             migr = FolderContentsMigrator(self.site, obj)
             folderdata = requests.post(self.source, data={
                 'migrator': FolderContentsMigrator.title,
-                'context': 'folder',
                 'path': '/'.join(obj.getPhysicalPath()
                     )[len(self.sitepath) + 1:]
             })
@@ -232,17 +239,24 @@ class Importer(BrowserView):
             source = sourcesite + '/@@migrator-exporter'
             attributes = self.request.get('attributes', '').splitlines()
             result = requests.post(source, data={
-                'migrator': self.request.get('migrator'),
-                'context': 'site'})
+                'migrator': self.request.get('migrator')})
             data = json.loads(result.content)
             if self.request.get('onlyNew', False):
                 onlyNew = True
             else:
                 onlyNew = False
+            if self.request.get('index', False):
+                index = True
+            else:
+                index = False
             if migratorname == SiteContentsMigrator.title:
                 threshold = int(self.request.get('threshold', '150'))
                 contentmigrator = ContentMigrator(self.request, source,
-                    sourcesite, migrator.site, threshold, attributes, onlyNew)
+                    sourcesite, migrator.site,
+                    threshold=threshold,
+                    attributes=attributes,
+                    onlyNew=onlyNew,
+                    index=index)
                 contentmigrator(migrator, data)
             else:
                 migrator.set(data)
