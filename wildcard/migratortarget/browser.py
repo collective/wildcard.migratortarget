@@ -201,11 +201,13 @@ class ContentMigrator(object):
             except MissingObjectException, ex:
                 logger.info(
                     'oops, could not find %s - touching' % ex.path)
+                path = ex.path
                 try:
-                    self._touchPath(ex.path)
+                    self._touchPath(path)
                 except ValueError:
                     # error in response. must not be valid object
-                    pass
+                    if path not in self.site._touch_errors:
+                        self.site._touch_errors.append(path)
                 error = True
 
         self.imported.append(objpath)
@@ -293,6 +295,8 @@ class Importer(BrowserView):
     def __call__(self):
         if not hasattr(self.context, '_import_results'):
             self.context._import_results = PersistentList()
+        if not hasattr(self.context, '_touch_errors'):
+            self.context._touch_errors = PersistentList()
         if self.request.get('REQUEST_METHOD') == 'POST':
             sourcesite = self.request.get('source', '').rstrip('/')
             if not sourcesite:

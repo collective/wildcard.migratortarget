@@ -19,6 +19,11 @@
             <tal:num tal:replace="python: len(context._import_results)" />
             already imported
         </p>
+        <p class="discreet">
+            <tal:num tal:replace="python: len(context._touch_errors)" />
+            touch errors
+            <p style="display:none" tal:content="python: context._touch_errors" />
+        </p>
         <form method="POST">
             <div class="field">
                 <label for="source">
