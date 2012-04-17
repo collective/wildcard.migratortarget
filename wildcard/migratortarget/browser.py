@@ -22,10 +22,18 @@ from plone.app.blob.interfaces import IBlobField
 from StringIO import StringIO
 from wildcard.migrator import scan
 from persistent.list import PersistentList
+from persistent.dict import PersistentDict
+from Persistence.mapping import PersistentMapping as PM1
+from persistent.mapping import PersistentMapping as PM2
+from BTrees.OOBTree import OOBTree
 scan()
 
 import logging
 logger = logging.getLogger('wildcard.migrator')
+
+_list_types = (list, tuple, PersistentList)
+_dict_types = (dict, PersistentDict, PM1, PM2, OOBTree)
+_iter_types = _list_types + _dict_types
 
 
 class ContentMigrator(object):
@@ -71,23 +79,40 @@ class ContentMigrator(object):
         return value
 
     def convertUids(self, data):
-        if isinstance(data, dict):
+        if type(data) in _dict_types:
             for key, value in data.items():
                 if isinstance(value, basestring):
                     data[key] = self._fixUids(value)
-                elif type(value) in (list, tuple, set):
+                elif type(value) in _list_types:
                     for idx, v in enumerate(value):
                         if isinstance(v, basestring):
                             value[idx] = self._fixUids(v)
-                        elif type(v) in (dict, list, tuple, set):
+                        elif type(v) in _iter_types:
                             self.convertUids(v)
-                elif type(value) == dict:
+                elif type(value) == set:
+                    for v in value:
+                        if isinstance(v, basestring):
+                            fixed = self._fixUids(v)
+                            value.remove(v)
+                            value.add(fixed)
+                        elif type(v) in _iter_types:
+                            self.convertUids(v)
+                elif type(value) in _dict_types:
                     self.convertUids(value)
-        elif type(data) in (list, tuple):
+        elif type(data) in _list_types:
             for idx, v in enumerate(data):
                 if isinstance(v, basestring):
                     data[idx] = self._fixUids(v)
-                elif type(v) in (dict, list, tuple, set):
+                elif type(v) in _iter_types:
+                    self.convertUids(v)
+        elif type(data) == set:
+            for v in data:
+                if isinstance(v, basestring):
+                    # no easy way to fix this otherwise...
+                    fixed = self._fixUids(v)
+                    data.remove(v)
+                    data.add(fixed)
+                elif type(v) in _iter_types:
                     self.convertUids(v)
 
     def _touchPath(self, path):
